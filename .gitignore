@@ -1,0 +1,34 @@
+# Build artifacts
+*.o
+*.ko
+*.mod.c
+*.mod
+*.mod.o
+*.order
+*.cmd
+modules.order
+Module.symvers
+.tmp_versions/
+.module-common.o
+
+# Test binaries
+test_mock
+test_delay
+test_match
+
+# Userspace binaries
+sbctl
+
+# NBS supervisor working directory
+.nbs/
+spawn_phase2.sh
+
+# Claude IDE settings
+.claude/
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

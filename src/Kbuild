@@ -1,0 +1,2 @@
+obj-m := speed_bump.o
+speed_bump-objs := speed_bump_main.o speed_bump_uprobe.o speed_bump_delay.o speed_bump_match.o
