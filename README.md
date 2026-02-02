@@ -153,6 +153,50 @@ Exit codes:
 - `1`: One or more tests failed
 - `77`: Tests skipped (e.g., not running as root, module not available)
 
+## Known Limitations
+
+### Integration Test Status
+
+The integration test script (`tests/integration_test.sh`) has been designed and implemented with safety features but **has not been verified in a live environment**. The test:
+
+- Uses `/bin/sleep` (minimal, safe binary)
+- Probes `nanosleep` (simple syscall wrapper)
+- Injects a modest 10ms delay (won't freeze the system)
+- Includes automatic cleanup on exit/interrupt
+- Provides documented rollback procedures
+
+**Verification requires:**
+- Root/sudo privileges
+- Safe test environment (VM recommended for first run)
+- Kernel module successfully loaded
+
+**Rollback procedure** (if module gets stuck):
+```bash
+# 1. Disable probes
+echo 0 > /sys/kernel/speed_bump/enabled
+
+# 2. Clear all targets
+echo "-*" > /sys/kernel/speed_bump/targets
+
+# 3. Unload module
+sudo rmmod speed_bump
+
+# 4. If rmmod fails
+sudo rmmod -f speed_bump
+```
+
+### Architecture-Specific Support
+
+- Currently supports **x86_64 only** (64-bit ELF symbol resolution)
+- Other architectures would require updates to `speed_bump_uprobe.c`
+
+### Compiler Requirements
+
+- Module must be built with the same compiler (clang or gcc) used to build the running kernel
+- The Makefile auto-detects this from `/lib/modules/$(uname -r)/build/.config`
+- Minor version mismatches (e.g., clang 19.1 vs 21.1) generate warnings but usually work
+- Major version or toolchain mismatches (gcc vs clang) will cause build failures
+
 ## Licence
 
 GPL-2.0 - See LICENSE file.
