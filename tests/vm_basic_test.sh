@@ -49,8 +49,8 @@ test_sysfs_interface() {
     fi
 
     # Check for expected files
-    for file in enabled targets delay_ns; do
-        if [ -f "/sys/kernel/speed_bump/$file" ]; then
+    for file in enabled targets default_delay_ns targets_list stats; do
+        if [ -e "/sys/kernel/speed_bump/$file" ]; then
             log_pass "sysfs file $file exists"
         else
             log_fail "sysfs file $file missing"
@@ -72,13 +72,17 @@ test_read_sysfs() {
     enabled=$(cat /sys/kernel/speed_bump/enabled)
     log_info "enabled = $enabled"
 
-    # Read delay
-    delay=$(cat /sys/kernel/speed_bump/delay_ns)
-    log_info "delay_ns = $delay"
+    # Read default delay
+    delay=$(cat /sys/kernel/speed_bump/default_delay_ns)
+    log_info "default_delay_ns = $delay"
 
-    # Read targets
-    targets=$(cat /sys/kernel/speed_bump/targets)
-    log_info "targets = $targets"
+    # Read targets list (targets_list is readable, targets is write-only)
+    targets=$(cat /sys/kernel/speed_bump/targets_list)
+    log_info "targets_list = $targets"
+
+    # Read stats
+    stats=$(cat /sys/kernel/speed_bump/stats)
+    log_info "stats = $stats"
 
     log_pass "All sysfs attributes readable"
     return 0
@@ -91,18 +95,18 @@ test_write_sysfs() {
     TESTS_RUN=$((TESTS_RUN + 1))
     log_info "Test: Write sysfs attributes"
 
-    # Try to set delay
-    echo 1000000 > /sys/kernel/speed_bump/delay_ns 2>/dev/null || {
-        log_fail "Failed to write delay_ns"
+    # Try to set default delay
+    echo 1000000 > /sys/kernel/speed_bump/default_delay_ns 2>/dev/null || {
+        log_fail "Failed to write default_delay_ns"
         return 1
     }
 
     # Verify it was set
-    delay=$(cat /sys/kernel/speed_bump/delay_ns)
+    delay=$(cat /sys/kernel/speed_bump/default_delay_ns)
     if [ "$delay" = "1000000" ]; then
-        log_pass "delay_ns write verified"
+        log_pass "default_delay_ns write verified"
     else
-        log_fail "delay_ns value mismatch: expected 1000000, got $delay"
+        log_fail "default_delay_ns value mismatch: expected 1000000, got $delay"
         return 1
     fi
 
@@ -134,14 +138,15 @@ test_targets() {
     log_info "Test: Add and remove target"
 
     # Add a target (use /bin/sleep:nanosleep as test target)
+    # Note: 'targets' is write-only, 'targets_list' is read-only
     if [ -f /bin/sleep ]; then
         echo "+/bin/sleep:nanosleep" > /sys/kernel/speed_bump/targets 2>/dev/null || {
             log_info "Note: Failed to add target (may be expected if uprobe setup fails)"
         }
 
-        # Check if target was added
-        targets=$(cat /sys/kernel/speed_bump/targets)
-        log_info "Current targets: $targets"
+        # Check if target was added (use targets_list to read)
+        targets=$(cat /sys/kernel/speed_bump/targets_list)
+        log_info "Current targets_list: $targets"
 
         # Clear targets
         echo "-*" > /sys/kernel/speed_bump/targets 2>/dev/null || true
