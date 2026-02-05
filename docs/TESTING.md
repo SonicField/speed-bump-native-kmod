@@ -459,3 +459,177 @@ Call from `main()` and update the test count.
 | Clean all builds | `make clean && cd tests && make clean` |
 | Check module info | `modinfo src/speed_bump.ko` |
 | View kernel logs | `dmesg \| tail -50` |
+
+---
+
+# Testing Strategy
+
+This document describes the two-tier testing strategy for the speed-bump kernel module.
+
+## Overview
+
+Testing kernel modules that interact with uprobes requires both **safety verification** (ensuring the module does not crash the kernel) and **functionality verification** (ensuring uprobes actually work). These have fundamentally different requirements:
+
+| Concern | Environment | What it verifies |
+|---------|-------------|------------------|
+| Safety | Isolated VM | Module loads, sysfs works, no kernel panic |
+| Functionality | Real host | Uprobes fire, delays are injected |
+
+A single environment cannot satisfy both: VMs provide safety but may lack working uprobes; hosts provide real uprobes but risk the system.
+
+## Tier 1: QEMU VM Testing (Safety)
+
+### Purpose
+
+Verify the kernel module does not crash the kernel and that the sysfs interface works correctly.
+
+### Environment
+
+- QEMU with KVM acceleration
+- Minimal Linux kernel (e.g., 6.6.x)
+- BusyBox userspace
+
+### What This Tests
+
+- Module loads without kernel panic
+- Sysfs interface responds correctly
+- Basic read/write operations work
+- Module unloads cleanly
+
+### What This Cannot Test
+
+- **Real uprobe functionality** - BusyBox binaries are typically statically linked and stripped, making uprobe attachment impossible
+- **Actual delay injection** - No suitable dynamic binaries to probe
+
+### Running QEMU Tests
+
+```bash
+# Build the module for the VM kernel
+make KDIR=/path/to/vm-kernel-build modules
+
+# Start QEMU with the test kernel
+qemu-system-x86_64 -kernel bzImage -initrd initramfs.cpio.gz \
+    -append "console=ttyS0" -nographic -m 512M -enable-kvm
+
+# Inside VM: load and test
+insmod /speed_bump.ko
+cat /sys/kernel/speed_bump/enabled
+echo 1 > /sys/kernel/speed_bump/enabled
+cat /sys/kernel/speed_bump/enabled
+rmmod speed_bump
+```
+
+### Expected Results
+
+- Module loads: `insmod` returns 0
+- Sysfs readable: `cat enabled` shows 0 or 1
+- Sysfs writable: `echo 1 > enabled` succeeds
+- Module unloads: `rmmod` returns 0
+
+## Tier 2: Host Testing (Functionality)
+
+### Purpose
+
+Verify that uprobes actually fire and delays are injected into real processes.
+
+### Environment
+
+- Real Linux host with kernel 6.x or later
+- Dynamically linked binaries with debug symbols
+- Root/sudo access
+
+### What This Tests
+
+- Uprobe registration succeeds
+- Uprobe handler fires on function entry
+- Delays are actually injected
+- Measured timing matches expected delays
+
+### Prerequisites
+
+- Kernel module built for the host kernel
+- Target binary with symbols (e.g., `libpython3.x.so`)
+- Process executing the target function
+
+### Example: Python Attribute Access Test
+
+This test probes `PyObject_GetAttr` in the Python shared library and verifies delays are injected.
+
+```bash
+# 1. Load the module
+sudo insmod speed_bump.ko
+
+# 2. Find libpython path
+LIBPYTHON=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")/libpython3.*.so.1.0
+
+# 3. Configure a 10ms delay on PyObject_GetAttr
+echo "+${LIBPYTHON}:PyObject_GetAttr 10000000" | sudo tee /sys/kernel/speed_bump/targets
+
+# 4. Enable probes
+echo 1 | sudo tee /sys/kernel/speed_bump/enabled
+
+# 5. Run test
+python3 -c "
+import time
+class Obj:
+    attr = 42
+
+o = Obj()
+start = time.perf_counter()
+for _ in range(100):
+    _ = o.attr  # Each triggers PyObject_GetAttr
+elapsed = time.perf_counter() - start
+print(f'100 attribute accesses took {elapsed*1000:.0f}ms')
+"
+
+# 6. Cleanup
+echo 0 | sudo tee /sys/kernel/speed_bump/enabled
+sudo rmmod speed_bump
+```
+
+### Expected Results
+
+With a 10ms delay on `PyObject_GetAttr`:
+- 100 attribute accesses should take approximately 1000ms (100 × 10ms)
+- Actual measured: ~1010ms (includes Python overhead)
+- Tolerance: ±5% is acceptable
+
+### Interpreting Results
+
+| Measured Time | Interpretation |
+|---------------|----------------|
+| ~1000ms | Delays working correctly |
+| ~0ms | Uprobe not firing (check symbol name, path) |
+| Kernel panic | Module bug (use QEMU tier first\!) |
+
+## Testing Workflow
+
+1. **Always start with Tier 1** - Verify safety in QEMU before touching host
+2. **Build for target kernel** - Module must match the running kernel version
+3. **Use safe probes first** - Start with functions that are called rarely
+4. **Monitor dmesg** - Watch for warnings or errors during testing
+5. **Have rollback ready** - Know how to disable probes and unload module
+
+## Rollback Procedure
+
+If something goes wrong during host testing:
+
+```bash
+# 1. Disable all probes immediately
+echo 0 | sudo tee /sys/kernel/speed_bump/enabled
+
+# 2. Clear all targets
+echo "-*" | sudo tee /sys/kernel/speed_bump/targets
+
+# 3. Unload the module
+sudo rmmod speed_bump
+
+# 4. If rmmod hangs, force unload (last resort)
+sudo rmmod -f speed_bump
+```
+
+## Architecture Notes
+
+- QEMU testing works on x86_64 with KVM acceleration
+- Host testing verified on both x86_64 and ARM64
+- Uprobe support requires `CONFIG_UPROBES=y` in kernel config

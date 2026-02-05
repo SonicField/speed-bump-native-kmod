@@ -34,4 +34,4 @@ spawn_phase2.sh
 .idea/
 
 # QEMU test cache
-scripts/cache/
+scripts/cache/*.o.d
