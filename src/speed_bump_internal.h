@@ -25,6 +25,7 @@ struct speed_bump_target {
 	char path[SPEED_BUMP_MAX_PATH_LEN];
 	char symbol[SPEED_BUMP_MAX_SYMBOL_LEN];
 	u64 delay_ns;
+	pid_t pid_filter;  /* 0 = no filter (probe all), >0 = filter to this PID + descendants */
 	loff_t offset;
 	atomic64_t hit_count;
 	atomic64_t total_delay_ns;

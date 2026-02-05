@@ -35,7 +35,8 @@ static void print_usage(void)
 		"Usage: %s <command> [options]\n"
 		"\n"
 		"Commands:\n"
-		"  add PATH:SYMBOL [DELAY_NS]  Add a target with optional delay\n"
+		"  add PATH:SYMBOL [DELAY_NS] [--pid=PID]\n"
+		"                              Add a target with optional delay and PID filter\n"
 		"  remove PATH:SYMBOL          Remove a specific target\n"
 		"  update PATH:SYMBOL DELAY_NS Update target's delay\n"
 		"  list                        List all current targets\n"
@@ -48,10 +49,12 @@ static void print_usage(void)
 		"Options:\n"
 		"  -h, --help                  Show this help message\n"
 		"  -v, --version               Show version\n"
+		"  --pid=PID                   Filter to only affect PID and its descendants\n"
 		"\n"
 		"Examples:\n"
 		"  %s add /usr/lib/libcuda.so:cudaLaunchKernel 10000\n"
-		"  %s add /usr/bin/app:process_request\n"
+		"  %s add /usr/bin/app:process_request --pid=12345\n"
+		"  %s add /usr/bin/app:process_request 50000 --pid=$$\n"
 		"  %s update /usr/bin/app:process_request 50000\n"
 		"  %s remove /usr/lib/libcuda.so:cudaLaunchKernel\n"
 		"  %s list\n"
@@ -63,9 +66,10 @@ static void print_usage(void)
 		"Target format:\n"
 		"  PATH must be an absolute path to an ELF binary or shared library\n"
 		"  SYMBOL must be a valid symbol name in the ELF symbol table\n"
-		"  DELAY_NS is the delay in nanoseconds (0 to 10000000000)\n",
+		"  DELAY_NS is the delay in nanoseconds (0 to 10000000000)\n"
+		"  PID filter restricts probes to the specified process and its children\n",
 		prog_name, prog_name, prog_name, prog_name, prog_name,
-		prog_name, prog_name, prog_name, prog_name, prog_name);
+		prog_name, prog_name, prog_name, prog_name, prog_name, prog_name);
 }
 
 static void print_version(void)
@@ -257,7 +261,10 @@ static int cmd_add(int argc, char **argv)
 {
 	char cmd[512];
 	int ret;
-	unsigned long delay;
+	unsigned long delay = 0;
+	long pid = 0;
+	int have_delay = 0;
+	int i;
 
 	if (argc < 1) {
 		fprintf(stderr, "Error: 'add' requires PATH:SYMBOL argument\n");
@@ -267,10 +274,33 @@ static int cmd_add(int argc, char **argv)
 	if (validate_target(argv[0]) < 0)
 		return 1;
 
-	if (argc >= 2) {
-		if (validate_delay(argv[1], &delay) < 0)
+	/* Parse remaining arguments for delay and --pid */
+	for (i = 1; i < argc; i++) {
+		if (strncmp(argv[i], "--pid=", 6) == 0) {
+			char *endptr;
+			errno = 0;
+			pid = strtol(argv[i] + 6, &endptr, 10);
+			if (errno != 0 || *endptr != '\0' || endptr == argv[i] + 6 || pid <= 0) {
+				fprintf(stderr, "Error: Invalid PID value '%s'\n", argv[i] + 6);
+				return 1;
+			}
+		} else if (!have_delay) {
+			if (validate_delay(argv[i], &delay) < 0)
+				return 1;
+			have_delay = 1;
+		} else {
+			fprintf(stderr, "Error: Unexpected argument '%s'\n", argv[i]);
 			return 1;
+		}
+	}
+
+	/* Build command string */
+	if (have_delay && pid > 0) {
+		ret = snprintf(cmd, sizeof(cmd), "+%s %lu pid=%ld", argv[0], delay, pid);
+	} else if (have_delay) {
 		ret = snprintf(cmd, sizeof(cmd), "+%s %lu", argv[0], delay);
+	} else if (pid > 0) {
+		ret = snprintf(cmd, sizeof(cmd), "+%s pid=%ld", argv[0], pid);
 	} else {
 		ret = snprintf(cmd, sizeof(cmd), "+%s", argv[0]);
 	}
@@ -286,7 +316,10 @@ static int cmd_add(int argc, char **argv)
 	if (write_sysfs(SYSFS_TARGETS, cmd) < 0)
 		return 1;
 
-	printf("Added target: %s\n", argv[0]);
+	if (pid > 0)
+		printf("Added target: %s (pid=%ld)\n", argv[0], pid);
+	else
+		printf("Added target: %s\n", argv[0]);
 	return 0;
 }
 

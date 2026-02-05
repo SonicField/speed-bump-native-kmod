@@ -12,6 +12,9 @@
 #include <linux/fs.h>
 #include <linux/elf.h>
 #include <linux/file.h>
+#include <linux/version.h>
+#include <linux/sched.h>
+#include <linux/rcupdate.h>
 
 #include "speed_bump.h"
 #include "speed_bump_internal.h"
@@ -24,9 +27,14 @@
  * Uprobe handler called when a probed function is entered.
  * Executes the spin delay configured for this target.
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,13,0)
 static int speed_bump_uprobe_handler(struct uprobe_consumer *uc,
 				     struct pt_regs *regs,
 				     __u64 *data)
+#else
+static int speed_bump_uprobe_handler(struct uprobe_consumer *uc,
+				     struct pt_regs *regs)
+#endif
 {
 	struct speed_bump_target *target;
 
@@ -34,6 +42,26 @@ static int speed_bump_uprobe_handler(struct uprobe_consumer *uc,
 		return 0;
 
 	target = container_of(uc, struct speed_bump_target, uc);
+
+	/* Check PID filter if set */
+	if (target->pid_filter != 0) {
+		struct task_struct *task = current;
+		bool match = false;
+
+		/* Walk up the process tree to find a match */
+		rcu_read_lock();
+		while (task->pid != 1) {  /* Stop at init */
+			if (task->tgid == target->pid_filter) {
+				match = true;
+				break;
+			}
+			task = rcu_dereference(task->real_parent);
+		}
+		rcu_read_unlock();
+
+		if (!match)
+			return 0;  /* Not in target process tree, skip delay */
+	}
 
 	/* Execute the delay */
 	speed_bump_spin_delay_ns(target->delay_ns);
@@ -57,8 +85,57 @@ static int speed_bump_uprobe_handler(struct uprobe_consumer *uc,
  */
 
 /*
- * Read ELF symbol table and find the offset for a symbol.
- * Returns the symbol offset on success, 0 on failure.
+ * Convert a virtual address to a file offset using ELF program headers.
+ * Returns the file offset on success, 0 on failure.
+ */
+static loff_t vaddr_to_file_offset(struct file *file,
+				   const struct elf64_hdr *ehdr,
+				   Elf64_Addr vaddr)
+{
+	struct elf64_phdr *phdrs = NULL;
+	loff_t file_offset = 0;
+	loff_t pos;
+	ssize_t ret;
+	int i;
+
+	if (ehdr->e_phnum == 0)
+		return 0;
+
+	/* Allocate and read program headers */
+	phdrs = kmalloc_array(ehdr->e_phnum, sizeof(*phdrs), GFP_KERNEL);
+	if (!phdrs)
+		return 0;
+
+	pos = ehdr->e_phoff;
+	ret = kernel_read(file, phdrs, ehdr->e_phnum * sizeof(*phdrs), &pos);
+	if (ret != ehdr->e_phnum * sizeof(*phdrs))
+		goto out;
+
+	/* Find PT_LOAD segment containing this virtual address */
+	for (i = 0; i < ehdr->e_phnum; i++) {
+		if (phdrs[i].p_type != PT_LOAD)
+			continue;
+
+		if (vaddr >= phdrs[i].p_vaddr &&
+		    vaddr < phdrs[i].p_vaddr + phdrs[i].p_filesz) {
+			file_offset = phdrs[i].p_offset +
+				      (vaddr - phdrs[i].p_vaddr);
+			break;
+		}
+	}
+
+out:
+	kfree(phdrs);
+	return file_offset;
+}
+
+/*
+ * Read ELF symbol table and find the file offset for a symbol.
+ * Returns the symbol's file offset on success, 0 on failure.
+ *
+ * Note: Symbol st_value is a virtual address; we convert it to a file
+ * offset using the program headers since uprobe_register() expects
+ * a file offset.
  */
 static loff_t resolve_symbol_offset(struct file *file,
 				    const char *symbol_name)
@@ -68,6 +145,7 @@ static loff_t resolve_symbol_offset(struct file *file,
 	char *shstrtab = NULL;
 	char *strtab = NULL;
 	struct elf64_sym *symtab = NULL;
+	Elf64_Addr sym_vaddr = 0;
 	loff_t offset = 0;
 	loff_t pos = 0;
 	ssize_t ret;
@@ -161,11 +239,11 @@ static loff_t resolve_symbol_offset(struct file *file,
 				continue;
 
 			if (strcmp(&strtab[symtab[j].st_name], symbol_name) == 0) {
-				/* Found it - return the value (offset) */
-				offset = symtab[j].st_value;
+				/* Found symbol - get virtual address */
+				sym_vaddr = symtab[j].st_value;
 				kfree(symtab);
 				kfree(strtab);
-				goto out;
+				goto convert_offset;
 			}
 		}
 
@@ -174,6 +252,11 @@ static loff_t resolve_symbol_offset(struct file *file,
 		symtab = NULL;
 		strtab = NULL;
 	}
+
+convert_offset:
+	/* Convert virtual address to file offset using program headers */
+	if (sym_vaddr != 0)
+		offset = vaddr_to_file_offset(file, &ehdr, sym_vaddr);
 
 out:
 	kfree(shstrtab);
@@ -232,6 +315,8 @@ int speed_bump_register_uprobe(struct speed_bump_target *target)
 	target->uc.ret_handler = NULL;
 
 	/* Register the uprobe (ref_ctr_offset = 0 means no semaphore) */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+	/* Kernel 6.12+: returns struct uprobe *, 4 args with ref_ctr_offset */
 	target->uprobe = uprobe_register(target->inode, target->offset, 0,
 					 &target->uc);
 	if (IS_ERR(target->uprobe)) {
@@ -241,6 +326,19 @@ int speed_bump_register_uprobe(struct speed_bump_target *target)
 		target->inode = NULL;
 		return err;
 	}
+#else
+	/* Kernel <6.12: returns int, 3 args (no ref_ctr_offset) */
+	{
+		int err = uprobe_register(target->inode, target->offset,
+					  &target->uc);
+		if (err) {
+			iput(target->inode);
+			target->inode = NULL;
+			return err;
+		}
+		target->uprobe = NULL;  /* Not returned by this API */
+	}
+#endif
 
 	target->registered = true;
 	return 0;
@@ -255,8 +353,14 @@ void speed_bump_unregister_uprobe(struct speed_bump_target *target)
 	if (!target->registered)
 		return;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+	/* Kernel 6.12+: two-phase unregister */
 	uprobe_unregister_nosync(target->uprobe, &target->uc);
 	uprobe_unregister_sync();
+#else
+	/* Kernel <6.12: single-call unregister with inode/offset */
+	uprobe_unregister(target->inode, target->offset, &target->uc);
+#endif
 	target->uprobe = NULL;
 	iput(target->inode);
 	target->inode = NULL;

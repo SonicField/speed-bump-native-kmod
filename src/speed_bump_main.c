@@ -80,21 +80,25 @@ static void free_target(struct speed_bump_target *target)
 /*
  * Parse a target specification line.
  *
- * Format: PATH:SYMBOL [DELAY_NS]
+ * Format: PATH:SYMBOL [DELAY_NS] [pid=PID]
  *
  * Returns 0 on success, negative errno on failure.
- * On success, populates path, symbol, and delay_ns.
+ * On success, populates path, symbol, delay_ns, and pid_filter.
  */
 static int parse_target_spec(const char *line, char *path, size_t path_len,
-			     char *symbol, size_t symbol_len, u64 *delay_ns)
+			     char *symbol, size_t symbol_len, u64 *delay_ns,
+			     pid_t *pid_filter)
 {
-	const char *colon, *space;
+	const char *colon, *space, *pid_str;
 	size_t plen, slen;
 	int ret;
 
 	/* Validate input */
-	if (!line || !path || !symbol || !delay_ns)
+	if (!line || !path || !symbol || !delay_ns || !pid_filter)
 		return -EINVAL;
+
+	/* Initialize pid_filter to 0 (no filter) */
+	*pid_filter = 0;
 
 	/* Find the colon separator */
 	colon = strchr(line, ':');
@@ -113,7 +117,7 @@ static int parse_target_spec(const char *line, char *path, size_t path_len,
 	memcpy(path, line, plen);
 	path[plen] = '\0';
 
-	/* Find space (optional delay) */
+	/* Find space (optional delay and/or pid) */
 	space = strchr(colon + 1, ' ');
 	if (space) {
 		slen = space - (colon + 1);
@@ -123,10 +127,43 @@ static int parse_target_spec(const char *line, char *path, size_t path_len,
 		memcpy(symbol, colon + 1, slen);
 		symbol[slen] = '\0';
 
-		/* Parse delay */
-		ret = kstrtou64(space + 1, 10, delay_ns);
-		if (ret)
-			return ret;
+		/* Check for pid= in the remainder */
+		pid_str = strstr(space + 1, "pid=");
+		if (pid_str) {
+			/* Parse PID */
+			ret = kstrtoint(pid_str + 4, 10, pid_filter);
+			if (ret)
+				return ret;
+			if (*pid_filter < 0)
+				return -EINVAL;
+		}
+
+		/* Parse delay (everything between first space and pid= or end) */
+		if (pid_str && pid_str > space + 1) {
+			/* There's something before pid= - try to parse as delay */
+			char delay_buf[32];
+			size_t delay_len = pid_str - (space + 1);
+			/* Skip trailing whitespace */
+			while (delay_len > 0 && (space[delay_len] == ' ' || space[delay_len] == '\t'))
+				delay_len--;
+			if (delay_len > 0 && delay_len < sizeof(delay_buf)) {
+				memcpy(delay_buf, space + 1, delay_len);
+				delay_buf[delay_len] = '\0';
+				ret = kstrtou64(delay_buf, 10, delay_ns);
+				if (ret)
+					return ret;
+			} else {
+				*delay_ns = speed_bump_default_delay;
+			}
+		} else if (!pid_str) {
+			/* No pid=, just parse delay */
+			ret = kstrtou64(space + 1, 10, delay_ns);
+			if (ret)
+				return ret;
+		} else {
+			/* pid= is right after space, use default delay */
+			*delay_ns = speed_bump_default_delay;
+		}
 
 		if (*delay_ns > SPEED_BUMP_MAX_DELAY_NS)
 			return -ERANGE;
@@ -179,10 +216,11 @@ static int add_target(const char *spec)
 	char path[SPEED_BUMP_MAX_PATH_LEN];
 	char symbol[SPEED_BUMP_MAX_SYMBOL_LEN];
 	u64 delay_ns;
+	pid_t pid_filter;
 	int ret;
 
 	ret = parse_target_spec(spec, path, sizeof(path),
-				symbol, sizeof(symbol), &delay_ns);
+				symbol, sizeof(symbol), &delay_ns, &pid_filter);
 	if (ret)
 		return ret;
 
@@ -210,6 +248,7 @@ static int add_target(const char *spec)
 	strscpy(target->path, path, sizeof(target->path));
 	strscpy(target->symbol, symbol, sizeof(target->symbol));
 	target->delay_ns = delay_ns;
+	target->pid_filter = pid_filter;
 	atomic64_set(&target->hit_count, 0);
 	atomic64_set(&target->total_delay_ns, 0);
 	INIT_LIST_HEAD(&target->list);
@@ -225,8 +264,12 @@ static int add_target(const char *spec)
 	list_add_tail(&target->list, &speed_bump_targets);
 	atomic_inc(&speed_bump_target_count);
 
-	pr_info("speed_bump: added target %s:%s delay=%llu ns\n",
-		path, symbol, delay_ns);
+	if (pid_filter)
+		pr_info("speed_bump: added target %s:%s delay=%llu ns pid=%d\n",
+			path, symbol, delay_ns, pid_filter);
+	else
+		pr_info("speed_bump: added target %s:%s delay=%llu ns\n",
+			path, symbol, delay_ns);
 
 out_unlock:
 	mutex_unlock(&speed_bump_mutex);
@@ -304,10 +347,11 @@ static int update_target(const char *spec)
 	char path[SPEED_BUMP_MAX_PATH_LEN];
 	char symbol[SPEED_BUMP_MAX_SYMBOL_LEN];
 	u64 delay_ns;
+	pid_t pid_filter;
 	int ret;
 
 	ret = parse_target_spec(spec, path, sizeof(path),
-				symbol, sizeof(symbol), &delay_ns);
+				symbol, sizeof(symbol), &delay_ns, &pid_filter);
 	if (ret)
 		return ret;
 
@@ -320,6 +364,9 @@ static int update_target(const char *spec)
 	}
 
 	target->delay_ns = delay_ns;
+	/* Also update pid_filter if specified */
+	if (pid_filter)
+		target->pid_filter = pid_filter;
 	mutex_unlock(&speed_bump_mutex);
 
 	pr_info("speed_bump: updated target %s:%s delay=%llu ns\n",
@@ -404,7 +451,7 @@ static struct kobj_attribute targets_attr =
  * /sys/kernel/speed_bump/targets_list
  *
  * Read-only: List all configured targets with their delays and hit counts.
- * Format: PATH:SYMBOL delay_ns=N hits=M
+ * Format: PATH:SYMBOL delay_ns=N hits=M [pid=P]
  */
 static ssize_t targets_list_show(struct kobject *kobj,
 				 struct kobj_attribute *attr, char *buf)
@@ -415,10 +462,19 @@ static ssize_t targets_list_show(struct kobject *kobj,
 	mutex_lock(&speed_bump_mutex);
 
 	list_for_each_entry(target, &speed_bump_targets, list) {
-		len += sysfs_emit_at(buf, len, "%s:%s delay_ns=%llu hits=%lld\n",
-				     target->path, target->symbol,
-				     target->delay_ns,
-				     atomic64_read(&target->hit_count));
+		if (target->pid_filter)
+			len += sysfs_emit_at(buf, len,
+					     "%s:%s delay_ns=%llu hits=%lld pid=%d\n",
+					     target->path, target->symbol,
+					     target->delay_ns,
+					     atomic64_read(&target->hit_count),
+					     target->pid_filter);
+		else
+			len += sysfs_emit_at(buf, len,
+					     "%s:%s delay_ns=%llu hits=%lld\n",
+					     target->path, target->symbol,
+					     target->delay_ns,
+					     atomic64_read(&target->hit_count));
 	}
 
 	mutex_unlock(&speed_bump_mutex);
