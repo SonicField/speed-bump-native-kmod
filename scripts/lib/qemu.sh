@@ -218,13 +218,21 @@ qemu_launch() {
     # Brief pause to let QEMU start
     sleep 0.5
 
-    # Check if still running
+    # Check if still running - but a quick completion is OK with KVM
+    # The VM can boot, run tests, and shutdown in under 0.5s with KVM!
     if ! kill -0 "${QEMU_PID}" 2>/dev/null; then
-        qemu_log_error "QEMU exited immediately"
-        qemu_log_error "Output:"
-        cat "${QEMU_OUTPUT_FILE}" >&2
-        QEMU_PID=""
-        return 1
+        # QEMU exited - check if it was successful by looking for test output
+        if grep -q "TEST_EXIT_CODE=" "${QEMU_OUTPUT_FILE}" 2>/dev/null; then
+            qemu_log_ok "QEMU completed quickly (KVM accelerated)"
+            QEMU_PID=""
+            return 0
+        else
+            qemu_log_error "QEMU exited immediately without completing tests"
+            qemu_log_error "Output:"
+            cat "${QEMU_OUTPUT_FILE}" >&2
+            QEMU_PID=""
+            return 1
+        fi
     fi
 
     return 0
@@ -236,9 +244,10 @@ qemu_launch() {
 qemu_wait() {
     local timeout="${1:-${QEMU_TIMEOUT}}"
 
+    # If QEMU already completed (KVM fast path), return success
     if [[ -z "${QEMU_PID}" ]]; then
-        qemu_log_error "No QEMU process running"
-        return 1
+        qemu_log_info "QEMU already completed (fast path)"
+        return 0
     fi
 
     qemu_log_info "Waiting for QEMU (timeout: ${timeout}s)..."
