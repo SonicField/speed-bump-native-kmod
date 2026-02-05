@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # Integration Test Script for speed_bump kernel module
 #
@@ -78,23 +78,23 @@ NC='\033[0m' # No Color
 # ============================================================================
 
 log_info() {
-    echo -e "[INFO] $1"
+    printf "[INFO] %s\n" "$1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    printf "${YELLOW}[WARN]${NC} %s\n" "$1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    printf "${RED}[ERROR]${NC} %s\n" "$1"
 }
 
 log_pass() {
-    echo -e "${GREEN}[PASS]${NC} $1"
+    printf "${GREEN}[PASS]${NC} %s\n" "$1"
 }
 
 log_fail() {
-    echo -e "${RED}[FAIL]${NC} $1"
+    printf "${RED}[FAIL]${NC} %s\n" "$1"
 }
 
 # Check if we have root privileges
@@ -431,15 +431,13 @@ main() {
     echo ""
 
     if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}Result: ALL TESTS PASSED${NC}"
+        printf "${GREEN}Result: ALL TESTS PASSED${NC}\n"
     else
-        echo -e "${RED}Result: SOME TESTS FAILED${NC}"
+        printf "${RED}Result: SOME TESTS FAILED${NC}\n"
     fi
 
     exit $exit_code
 }
 
-# Run main if script is executed directly
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    main "$@"
-fi
+# Run main (script is always executed directly in test environment)
+main "$@"
