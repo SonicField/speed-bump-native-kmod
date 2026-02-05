@@ -193,12 +193,30 @@ prepare_test_harness() {
     TEMP_DIR=$(mktemp -d /tmp/qemu-test-harness.XXXXXX)
     log_info "Test harness directory: ${TEMP_DIR}"
 
+    # Get kernel build directory
+    local kernel_build_dir
+    kernel_build_dir=$(dirname "$(readlink -f "${KERNEL_IMAGE_PATH}")")
+    kernel_build_dir=$(dirname "${kernel_build_dir}")  # Go up from arch/arm64/boot
+    kernel_build_dir=$(dirname "${kernel_build_dir}")
+    kernel_build_dir=$(dirname "${kernel_build_dir}")
+    log_info "Kernel build directory: ${kernel_build_dir}"
+
     # Copy kernel module source
     log_info "Copying kernel module source..."
     cp -r "${PROJECT_ROOT}/src" "${TEMP_DIR}/"
     cp -r "${PROJECT_ROOT}/tests" "${TEMP_DIR}/"
     cp "${PROJECT_ROOT}/Makefile" "${TEMP_DIR}/" 2>/dev/null || true
     cp "${PROJECT_ROOT}/Kbuild" "${TEMP_DIR}/" 2>/dev/null || true
+
+    # Pre-compile the kernel module on the host
+    log_info "Pre-compiling kernel module..."
+    if [[ -f "${TEMP_DIR}/src/Kbuild" ]] || [[ -f "${TEMP_DIR}/Makefile" ]]; then
+        if make -C "${kernel_build_dir}" M="${TEMP_DIR}/src" modules 2>&1; then
+            log_ok "Kernel module compiled successfully"
+        else
+            log_warn "Failed to pre-compile kernel module, will try in VM"
+        fi
+    fi
 
     # Create run-tests.sh script for VM to execute
     cat > "${TEMP_DIR}/run-tests.sh" << 'HARNESS_EOF'
@@ -215,29 +233,37 @@ echo ""
 
 cd /mnt/host
 
-# Build the kernel module
-echo "[HARNESS] Building kernel module..."
-if [ -f Makefile ]; then
-    make modules 2>&1 || {
-        echo "[HARNESS] ERROR: Module build failed"
-        echo "TEST_EXIT_CODE=1"
-        exit 1
-    }
-elif [ -f src/Kbuild ]; then
-    # Build directly with kbuild
-    make -C /lib/modules/$(uname -r)/build M=/mnt/host/src modules 2>&1 || {
-        echo "[HARNESS] ERROR: Module build failed"
-        echo "TEST_EXIT_CODE=1"
-        exit 1
-    }
-fi
-
-# Check if module was built
+# Check if module was pre-compiled on host
 MODULE_PATH=""
 if [ -f src/speed_bump.ko ]; then
     MODULE_PATH="src/speed_bump.ko"
+    echo "[HARNESS] Using pre-compiled module: ${MODULE_PATH}"
 elif [ -f speed_bump.ko ]; then
     MODULE_PATH="speed_bump.ko"
+    echo "[HARNESS] Using pre-compiled module: ${MODULE_PATH}"
+else
+    # Build the kernel module (requires make/gcc in initramfs)
+    echo "[HARNESS] No pre-compiled module found, attempting to build..."
+    if [ -f Makefile ]; then
+        make modules 2>&1 || {
+            echo "[HARNESS] ERROR: Module build failed (make not available?)"
+            echo "TEST_EXIT_CODE=1"
+            exit 1
+        }
+    elif [ -f src/Kbuild ]; then
+        # Build directly with kbuild
+        make -C /lib/modules/$(uname -r)/build M=/mnt/host/src modules 2>&1 || {
+            echo "[HARNESS] ERROR: Module build failed"
+            echo "TEST_EXIT_CODE=1"
+            exit 1
+        }
+    fi
+
+    if [ -f src/speed_bump.ko ]; then
+        MODULE_PATH="src/speed_bump.ko"
+    elif [ -f speed_bump.ko ]; then
+        MODULE_PATH="speed_bump.ko"
+    fi
 fi
 
 if [ -z "${MODULE_PATH}" ]; then
