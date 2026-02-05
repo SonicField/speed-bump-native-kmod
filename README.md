@@ -2,6 +2,21 @@
 
 Kernel module for applying controlled delays to native code execution using uprobes.
 
+## Recommended Usage
+
+The easiest way to use this module is via the **speed-bump Python package**, which provides a high-level API:
+
+```python
+from speed_bump import native
+
+with native.probe("/usr/bin/python3", "PyObject_GetAttr", delay_ns=1000):
+    run_benchmark()  # Only this process tree is affected
+```
+
+The Python API automatically handles PID filtering, probe cleanup, and kernel module communication. See the speed-bump package README for details.
+
+**Direct usage** via `sbctl` or sysfs is also supported for shell scripts, other languages, or advanced use cases.
+
 ## Overview
 
 This kernel module uses uprobes to inject configurable delays into native function calls, providing speed-bump functionality for compiled binaries. Configuration is exposed via sysfs.
@@ -82,6 +97,9 @@ sbctl add /usr/lib/libcuda.so:cudaLaunchKernel 10000
 # Add a target using default delay
 sbctl add /usr/bin/myapp:process_request
 
+# Add a target with PID filtering (only affects this process tree)
+sbctl add /usr/bin/python3:PyObject_GetAttr 1000 --pid=$$
+
 # Update a target's delay
 sbctl update /usr/bin/myapp:process_request 50000
 
@@ -105,6 +123,28 @@ sbctl clear
 
 # Disable probes
 sbctl disable
+```
+
+### PID Filtering
+
+By default, probes affect **all processes** that execute the target function. Use the `--pid` option to restrict delays to a specific process and its descendants:
+
+```bash
+# Only delay the current shell and its children
+sbctl add /bin/sleep:nanosleep 1000000 --pid=$$
+
+# Only delay a specific process tree
+sbctl add /usr/bin/python3:PyObject_GetAttr 5000 --pid=12345
+```
+
+When PID filtering is active:
+- The specified process and all its descendants (children, grandchildren, etc.) are delayed
+- Other processes calling the same function are not affected
+- This is essential for benchmarking without impacting system services
+
+The sysfs format supports PID filtering via `pid=N` suffix:
+```bash
+echo "+/path/to/binary:symbol 1000 pid=12345" > /sys/kernel/speed_bump/targets
 ```
 
 For help:
