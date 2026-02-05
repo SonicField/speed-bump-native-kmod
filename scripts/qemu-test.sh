@@ -158,17 +158,18 @@ build_kernel() {
 build_rootfs() {
     log_step "Building Root Filesystem"
 
-    # Source rootfs library
-    # shellcheck source=lib/rootfs.sh
-    source "${LIB_DIR}/rootfs.sh"
-
-    # Set architecture from kernel detection
+    # Set architecture from kernel detection BEFORE sourcing rootfs.sh
+    # (rootfs.sh defaults ARCH to x86_64 if not set)
     if [[ -n "${KERNEL_ARCH:-}" ]]; then
         case "${KERNEL_ARCH}" in
             x86)  export ARCH="x86_64" ;;
             arm64) export ARCH="aarch64" ;;
         esac
     fi
+
+    # Source rootfs library
+    # shellcheck source=lib/rootfs.sh
+    source "${LIB_DIR}/rootfs.sh"
 
     # Run full build (will use cache if available)
     if ! rootfs_build_all; then
