@@ -201,7 +201,7 @@ qemu_launch() {
     qemu_log_info "  Output: ${QEMU_OUTPUT_FILE}"
 
     # Launch QEMU in background
-    "${qemu_cmd[@]}" > "${QEMU_OUTPUT_FILE}" 2>&1 &
+    "${qemu_cmd[@]}" < /dev/null > "${QEMU_OUTPUT_FILE}" 2>&1 &
     QEMU_PID=$!
 
     qemu_log_ok "QEMU started with PID ${QEMU_PID}"
