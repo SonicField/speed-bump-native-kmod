@@ -32,3 +32,6 @@ spawn_phase2.sh
 *~
 .vscode/
 .idea/
+
+# QEMU test cache
+scripts/cache/
