@@ -292,8 +292,11 @@ echo "[HARNESS] Running integration tests..."
 echo ""
 
 EXIT_CODE=0
-if [ -x tests/integration_test.sh ]; then
-    # Set MODULE_PATH for integration test
+if [ -x tests/vm_basic_test.sh ]; then
+    # Use the POSIX-compatible VM test
+    ./tests/vm_basic_test.sh || EXIT_CODE=$?
+elif [ -x tests/integration_test.sh ]; then
+    # Fallback to full integration test (requires bash)
     export MODULE_PATH="${MODULE_PATH}"
     ./tests/integration_test.sh || EXIT_CODE=$?
 else
