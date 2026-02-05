@@ -168,8 +168,13 @@ kernel_configure() {
         # Basic console
         "CONFIG_PRINTK=y"
         "CONFIG_TTY=y"
+        "CONFIG_SERIAL_EARLYCON=y"
         "CONFIG_SERIAL_8250=y"
         "CONFIG_SERIAL_8250_CONSOLE=y"
+
+        # ARM64 UART (PL011 for QEMU virt machine)
+        "CONFIG_SERIAL_AMBA_PL011=y"
+        "CONFIG_SERIAL_AMBA_PL011_CONSOLE=y"
 
         # ELF support
         "CONFIG_ELF_CORE=y"
@@ -191,8 +196,10 @@ kernel_configure() {
         "CONFIG_9P_FS=y"
 
         # Virtio drivers
+        "CONFIG_VIRTIO_MENU=y"
         "CONFIG_VIRTIO=y"
         "CONFIG_VIRTIO_PCI=y"
+        "CONFIG_VIRTIO_PCI_LEGACY=y"
         "CONFIG_VIRTIO_CONSOLE=y"
         "CONFIG_HW_RANDOM_VIRTIO=y"
 
@@ -203,6 +210,10 @@ kernel_configure() {
         # Block devices
         "CONFIG_BLOCK=y"
         "CONFIG_VIRTIO_BLK=y"
+
+        # Initramfs support
+        "CONFIG_BLK_DEV_INITRD=y"
+        "CONFIG_RD_GZIP=y"
 
         # Required for modules
         "CONFIG_KMOD=y"

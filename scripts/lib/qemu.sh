@@ -86,11 +86,20 @@ qemu_get_machine_args() {
 
     case "${arch}" in
         x86_64)
-            # No special machine args needed for x86_64
-            echo ""
+            # Use KVM if available
+            if [[ -r /dev/kvm ]]; then
+                echo "-enable-kvm -cpu host"
+            else
+                echo ""
+            fi
             ;;
         aarch64)
-            echo "-M virt -cpu cortex-a57"
+            # Use KVM if available for much faster boot
+            if [[ -r /dev/kvm ]]; then
+                echo "-M virt -cpu host -enable-kvm"
+            else
+                echo "-M virt -cpu cortex-a57"
+            fi
             ;;
         *)
             return 1
