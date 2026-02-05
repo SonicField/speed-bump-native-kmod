@@ -209,9 +209,10 @@ prepare_test_harness() {
     cp "${PROJECT_ROOT}/Kbuild" "${TEMP_DIR}/" 2>/dev/null || true
 
     # Pre-compile the kernel module on the host
-    log_info "Pre-compiling kernel module..."
+    # KERNEL_ARCH is set by kernel.sh (arm64 for aarch64, x86 for x86_64)
+    log_info "Pre-compiling kernel module (ARCH=${KERNEL_ARCH:-})..."
     if [[ -f "${TEMP_DIR}/src/Kbuild" ]] || [[ -f "${TEMP_DIR}/Makefile" ]]; then
-        if make -C "${kernel_build_dir}" M="${TEMP_DIR}/src" modules 2>&1; then
+        if make -C "${kernel_build_dir}" ARCH="${KERNEL_ARCH:-}" M="${TEMP_DIR}/src" modules 2>&1; then
             log_ok "Kernel module compiled successfully"
         else
             log_warn "Failed to pre-compile kernel module, will try in VM"
