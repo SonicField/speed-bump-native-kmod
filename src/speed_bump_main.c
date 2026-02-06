@@ -50,8 +50,10 @@ static struct kobject *speed_bump_kobj;
 LIST_HEAD(speed_bump_targets);
 DEFINE_MUTEX(speed_bump_mutex);
 atomic_t speed_bump_enabled = ATOMIC_INIT(0);
-atomic64_t speed_bump_total_hits = ATOMIC64_INIT(0);
-atomic64_t speed_bump_total_delay = ATOMIC64_INIT(0);
+
+/* Per-CPU counters - no explicit init needed, zero-initialised */
+DEFINE_PER_CPU(u64, speed_bump_hits_percpu);
+DEFINE_PER_CPU(u64, speed_bump_delay_percpu);
 
 /* Module-local state */
 static u64 speed_bump_default_delay = SPEED_BUMP_DEFAULT_DELAY_NS;
@@ -485,6 +487,32 @@ static struct kobj_attribute targets_list_attr =
 	__ATTR(targets_list, 0444, targets_list_show, NULL);
 
 /*
+ * Aggregate per-CPU counters.
+ * Returns the sum of all per-CPU values.
+ */
+static u64 aggregate_percpu_hits(void)
+{
+	u64 total = 0;
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		total += per_cpu(speed_bump_hits_percpu, cpu);
+
+	return total;
+}
+
+static u64 aggregate_percpu_delay(void)
+{
+	u64 total = 0;
+	int cpu;
+
+	for_each_possible_cpu(cpu)
+		total += per_cpu(speed_bump_delay_percpu, cpu);
+
+	return total;
+}
+
+/*
  * /sys/kernel/speed_bump/stats
  *
  * Read-only: Global statistics.
@@ -495,12 +523,12 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 	return sysfs_emit(buf,
 			  "enabled: %d\n"
 			  "targets: %d\n"
-			  "total_hits: %lld\n"
-			  "total_delay_ns: %lld\n",
+			  "total_hits: %llu\n"
+			  "total_delay_ns: %llu\n",
 			  atomic_read(&speed_bump_enabled),
 			  atomic_read(&speed_bump_target_count),
-			  atomic64_read(&speed_bump_total_hits),
-			  atomic64_read(&speed_bump_total_delay));
+			  aggregate_percpu_hits(),
+			  aggregate_percpu_delay());
 }
 
 static struct kobj_attribute stats_attr =

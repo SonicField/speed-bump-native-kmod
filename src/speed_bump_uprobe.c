@@ -15,6 +15,7 @@
 #include <linux/version.h>
 #include <linux/sched.h>
 #include <linux/rcupdate.h>
+#include <linux/percpu.h>
 
 #include "speed_bump.h"
 #include "speed_bump_internal.h"
@@ -69,8 +70,9 @@ static int speed_bump_uprobe_handler(struct uprobe_consumer *uc,
 	/* Update statistics */
 	atomic64_inc(&target->hit_count);
 	atomic64_add(target->delay_ns, &target->total_delay_ns);
-	atomic64_inc(&speed_bump_total_hits);
-	atomic64_add(target->delay_ns, &speed_bump_total_delay);
+	/* Per-CPU counters - no contention */
+	this_cpu_inc(speed_bump_hits_percpu);
+	this_cpu_add(speed_bump_delay_percpu, target->delay_ns);
 
 	return 0;
 }

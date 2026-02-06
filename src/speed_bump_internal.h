@@ -13,6 +13,7 @@
 #include <linux/list.h>
 #include <linux/atomic.h>
 #include <linux/uprobes.h>
+#include <linux/percpu.h>
 
 #include "speed_bump.h"
 
@@ -42,8 +43,10 @@ struct speed_bump_target {
 extern struct list_head speed_bump_targets;
 extern struct mutex speed_bump_mutex;
 extern atomic_t speed_bump_enabled;
-extern atomic64_t speed_bump_total_hits;
-extern atomic64_t speed_bump_total_delay;
+
+/* Per-CPU counters for global statistics */
+DECLARE_PER_CPU(u64, speed_bump_hits_percpu);
+DECLARE_PER_CPU(u64, speed_bump_delay_percpu);
 
 /* ============================================================
  * Uprobe Functions (defined in speed_bump_uprobe.c)
